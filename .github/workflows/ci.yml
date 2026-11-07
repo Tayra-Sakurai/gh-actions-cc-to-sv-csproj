@@ -1,0 +1,40 @@
+name: Build actions
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - v*
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build:
+    name: Build package
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Restore
+        run: npm ci
+
+      - name: build
+        run: npm run build
+
+      - name: Make a commit
+        run: |
+          git config --global user.email "b4151069@edu.kit.ac.jp"
+          git config --global user.name "Tayra-Sakurai"
+          git add .
+          git diff --staged --exit-code || (git commit -m 'ci: ' && git push)
