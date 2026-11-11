@@ -70,10 +70,12 @@ async function run() {
     if (tag)
       bumper.tag(tag);
     const paths = core.getMultilineInput('path');
-    const { level } = await bumper.bump();
+    const { level, releaseType } = await bumper.bump();
     for (const path of paths) {
       const content = readFileSync(path, 'utf-8');
-      const rawxml = content.replace(/^\xef\xbb\xbf/, '');
+      core.info(content);
+      const rawxml = content.replace(/^\ufeff/, '');
+      core.info(rawxml);
       const parser = new XMLParser({
         preserveOrder: true,
         commentPropName: "#comment",
@@ -142,7 +144,7 @@ async function run() {
       const serialized = builder.build(xml).trimStart();
       const eol = rawxml.endsWith('\r\n') ? '\r\n' : (rawxml.endsWith('\n') ? '\n' : '');
       const output = serialized.endsWith('\n') ? serialized : serialized + eol;
-      writeFileSync(path, '\xef\xbb\xbf' + output, 'utf-8');
+      writeFileSync(path, '\ufeff' + output, 'utf-8');
     }
     execSync('git config user.name "github-actions[bot]"', { stdio: 'inherit' });
     execSync('git config user.email "41898282+github-actions[bot]@://github.com"', { stdio: 'inherit' });
@@ -156,6 +158,8 @@ async function run() {
     } else {
       core.info('No changes to commit.');
     }
+
+    core.setOutput('release-type', releaseType);
   } catch (error) {
     core.setFailed(error.message);
   }
