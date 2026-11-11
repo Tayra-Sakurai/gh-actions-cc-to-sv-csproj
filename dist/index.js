@@ -34986,6 +34986,7 @@ class Bumper {
 
 try {
   const bumper = new Bumper();
+  bumper.loadPreset('conventionalcommits');
   const tag = getInput('tag');
   if (tag)
     bumper.tag(tag);
