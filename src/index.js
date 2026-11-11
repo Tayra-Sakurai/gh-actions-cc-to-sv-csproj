@@ -9,7 +9,7 @@ try {
   const tag = core.getInput('tag');
   if (tag)
     bumper.tag(tag);
-  const paths = core.getMultilineInput('paths');
+  const paths = core.getMultilineInput('path');
   const { level } = await bumper.bump();
   for (const path in paths) {
     const content = readFileSync(path, 'utf-8');
