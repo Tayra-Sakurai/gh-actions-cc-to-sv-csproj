@@ -34984,15 +34984,794 @@ class Bumper {
     }
 }
 
+/**
+ * Converts a renderable value to a string.
+ * @param value - Value to render.
+ * @returns String value, or an empty string for empty values.
+ */
+function toString(value) {
+    return typeof value === 'number' || value ? String(value) : '';
+}
+/**
+ * Renders an array into newline-separated non-empty strings.
+ * @param array - Items to render.
+ * @param callback - Item renderer.
+ * @param separator - Separator inserted between rendered items.
+ * @returns Rendered string.
+ */
+function each(array, callback, separator = newline()) {
+    return array
+        ? array.reduce((acc, item) => {
+            const rendered = toString(callback(item)).trim();
+            return `${acc}${acc && rendered ? separator : ''}${rendered}`;
+        }, '')
+        : '';
+}
+/**
+ * Renders a Markdown heading.
+ * @param level - Markdown heading level.
+ * @param text - Heading text.
+ * @returns Markdown heading.
+ */
+function heading(level, text) {
+    return `${'#'.repeat(level)} ${text}`;
+}
+/**
+ * Renders a Markdown link.
+ * @param text - Link text.
+ * @param url - Link URL.
+ * @returns Markdown link.
+ */
+function link(text, url) {
+    return `[${text}](${url})`;
+}
+/**
+ * Renders an array into a Markdown unordered list.
+ * @param array - Items to render.
+ * @param callback - Item renderer.
+ * @returns Markdown unordered list.
+ */
+function list(array, callback) {
+    return each(array, (item) => {
+        const rendered = toString(callback(item)).trim();
+        const itemText = rendered
+            .split(/\r?\n/)
+            .map((line, index) => (index > 0 && line
+            ? `  ${line}`
+            : line))
+            .join('\n');
+        return rendered ? `* ${itemText}` : '';
+    });
+}
+/**
+ * Renders bold Markdown text.
+ * @param text - Text to render.
+ * @returns Bold Markdown text.
+ */
+function bold(text) {
+    return `**${text}**`;
+}
+/**
+ * Creates one or more newline characters.
+ * @param times - Number of newline characters to render.
+ * @returns Newline characters.
+ */
+function newline(times = 1) {
+    return '\n'.repeat(times);
+}
+/**
+ * Renders values without separators.
+ * @param values - Values to render.
+ * @returns Concatenated non-empty values.
+ */
+function strings(...values) {
+    return each(values, value => value, '');
+}
+/**
+ * Renders values as Markdown blocks separated by blank lines.
+ * @param values - Values to render.
+ * @returns Rendered non-empty block segments.
+ */
+function segments(...values) {
+    return each(values, value => value, newline(2));
+}
+/**
+ * Renders values as space-separated words.
+ * @param values - Values to render.
+ * @returns Rendered non-empty words.
+ */
+function words(...values) {
+    return each(values, value => value, ' ');
+}
+/**
+ * Joins URL path segments and trims extra slashes around each segment.
+ * @param parts - URL path segments.
+ * @returns Joined URL.
+ */
+function url(...parts) {
+    return parts.reduce((acc, part) => {
+        if (typeof part !== 'number' && !part) {
+            return acc;
+        }
+        const segment = String(part).replace(/^\/+|\/+$/g, '');
+        return acc
+            ? `${acc}/${segment}`
+            : segment;
+    }, '');
+}
+
+/**
+ * Markdown segments to keep as is: replacing references inside them
+ * would break already formatted links, code samples and urls.
+ */
+const protectedSegments = [
+    /\[(?:[^[\]]|\[[^[\]]*])*]\((?:[^()\n]|\([^()\n]*\))*\)/, // [text](url)
+    // a text and a label end before the next not nested `[`,
+    // so a long run of brackets is not scanned to its end from every one of them
+    /\[(?:[^[\]]|\[[^[\]]*])*]\[[^[\]]*]/, // [text][ref]
+    // the lookahead makes the delimiter length atomic, without it a long run
+    // of backticks makes the regex engine retry every possible delimiter length;
+    // as in CommonMark, the info string of backticks has no backticks, and a block
+    // without a closing fence lasts to the end, so the next fences don't scan it again
+    /^[ \t]*(?=(?<fence>`{3,}|~{3,}))\k<fence>(?:(?<=`)[^`\n]*|(?<=~)[^\n]*)$[\s\S]*?(?:^[ \t]*\k<fence>[ \t]*\r?$|(?![\s\S]))/, // ```code block```
+    // as in CommonMark, whole runs of backticks of the same length open and close a span;
+    // only runs of up to 16 backticks open one, so at most 16 runs without a closing one
+    // scan the rest of a line
+    /(?<!`)(?=(?<code>`{1,16}(?!`)))\k<code>[^\n]*?(?<!`)\k<code>(?!`)/, // `code span`
+    /https?:\/\/(?:[^\s()]|\([^\s()]*\))+/ // https://url
+];
+const userMention = /\B@(?<user>[a-z0-9](?:-?[a-z0-9/]){0,38})/;
+const defaultIssuePattern = /[a-z0-9]+/;
+/**
+ * Escapes a string to use it as a part of a regex.
+ * @param string
+ * @returns Escaped string.
+ */
+function escapeRegExp(string) {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+/**
+ * Builds a regex which matches issue and user references
+ * outside of the protected Markdown segments.
+ * @param issuePrefixes
+ * @param issuePattern
+ * @returns Regex with `prefix`, `issue` and `user` groups.
+ */
+function referencesRegex(issuePrefixes = [], issuePattern = defaultIssuePattern) {
+    const prefixes = issuePrefixes
+        .map(prefix => (typeof prefix === 'string' ? escapeRegExp(prefix) : prefix.source))
+        .join('|');
+    const patterns = [
+        ...protectedSegments.map(segment => segment.source),
+        // without prefixes every word would be matched as an issue reference
+        prefixes && `(?<prefix>${prefixes})(?<issue>${issuePattern.source})`,
+        userMention.source
+    ];
+    return new RegExp(patterns.filter(Boolean).join('|'), 'gm');
+}
+/**
+ * Creates a text formatter for the given options.
+ *
+ * Regexes from the options are inlined into a single multiline regex,
+ * so their flags are ignored, `^` and `$` match line boundaries,
+ * and they should not contain capturing groups, backreferences or named groups.
+ * @param options - Formatter options.
+ * @returns Formatter which replaces issue and user references in a text with links.
+ */
+function createReferencesFormatter(options) {
+    const regex = referencesRegex(options.issuePrefixes, options.issuePattern);
+    return (text, context, references) => text.replace(regex, (match, ...args) => {
+        const { prefix, issue, user } = args.at(-1);
+        if (issue) {
+            const issueUrl = options.formatIssueUrl(context, {
+                prefix: prefix,
+                issue
+            });
+            if (!issueUrl) {
+                return match;
+            }
+            references?.push(match);
+            return link(match, issueUrl);
+        }
+        if (user) {
+            // TODO: investigate why this code exists.
+            if (user.includes('/')) {
+                return match;
+            }
+            const userUrl = options.formatUserUrl(context, user);
+            if (!userUrl) {
+                return match;
+            }
+            return link(match, userUrl);
+        }
+        return match;
+    });
+}
+
+/**
+ * Builds a repository URL from template context fields.
+ * @param context - Template context.
+ * @returns Repository URL.
+ */
+function repositoryUrl(context) {
+    if (context.repository) {
+        return url(context.host, context.owner, context.repository);
+    }
+    return context.repoUrl || '';
+}
+/**
+ * Builds a repository URL for a commit reference.
+ * @param context - Template context.
+ * @param reference - Commit reference.
+ * @returns Reference repository URL.
+ */
+function referenceRepositoryUrl(context, reference) {
+    if (!context.repository) {
+        return context.repoUrl || '';
+    }
+    if (reference.repository) {
+        return url(context.host, reference.owner, reference.repository);
+    }
+    return url(context.host, context.owner, context.repository);
+}
+/**
+ * Builds a release comparison URL and encodes tag names as URL path segments.
+ * @param context - Template context.
+ * @returns Release comparison URL.
+ */
+function compareUrl(context) {
+    const previousTag = encodeURIComponent(context.previousTag || '');
+    const currentTag = encodeURIComponent(context.currentTag || '');
+    return url(repositoryUrl(context), context.compare || 'compare', `${previousTag}...${currentTag}`);
+}
+const BREAKING_CHANGE_KEYWORDS = ['BREAKING CHANGE', 'BREAKING-CHANGE'];
+const BREAKING_CHANGES_TITLE = 'BREAKING CHANGES';
+/**
+ * Renders a note group title.
+ * Breaking change keywords are merged into a single title,
+ * every other keyword is uppercased to group its spellings together.
+ * @param title - Note title as it was written in a commit.
+ * @returns Note group title.
+ */
+function noteTitle(title) {
+    const upperCaseTitle = title.toUpperCase();
+    return BREAKING_CHANGE_KEYWORDS.includes(upperCaseTitle)
+        ? BREAKING_CHANGES_TITLE
+        : upperCaseTitle;
+}
+/**
+ * Checks if a note is a breaking change note.
+ * @param note - Commit note.
+ * @returns Is it a breaking change note.
+ */
+function isBreakingNote(note) {
+    return noteTitle(note.title) === BREAKING_CHANGES_TITLE;
+}
+/**
+ * Renders a commit reference label.
+ * @param reference - Commit reference.
+ * @returns Commit reference label.
+ */
+function reference(reference) {
+    return strings(reference.owner && `${reference.owner}/`, reference.repository, reference.issue && `${reference.prefix || '#'}${reference.issue}`);
+}
+
+/**
+ * Creates writer options which make legacy handlebars-based writers
+ * (`conventional-changelog-writer@8` and older) fail loudly instead of
+ * silently rendering an empty changelog when a mixed-versions install
+ * resolves a modern preset against them.
+ * Legacy writers compile the `mainTemplate` option with handlebars,
+ * where rendering the planted template triggers the `helperMissing` hook,
+ * which throws an error with the message from the template.
+ * Modern writers have no `mainTemplate` option and ignore the value,
+ * and a string survives the option merges of downstream tooling,
+ * so the guard reaches legacy writers even through cloned options.
+ * The message must not contain `]` characters to stay a valid
+ * handlebars segment literal.
+ * @param preset - Preset package name to mention in the error message.
+ * @returns Writer options to spread into preset writer options.
+ */
+function createLegacyWriterGuard(preset) {
+    return {
+        mainTemplate: `{{[${preset} requires conventional-changelog-writer@9 or newer (conventional-changelog@8 or newer). Your changelog tooling loaded an older writer which cannot render this preset. Update the tooling or use an older major version of the preset.] true}}`
+    };
+}
+
+const BREAKING_HEADER_PATTERN = /^(\w*)(?:\((.*)\))?!: (.*)$/;
+
+const DEFAULT_COMMIT_TYPES = Object.freeze([
+  {
+    type: 'feat',
+    section: 'Features',
+    effect: 'bump'
+  },
+  {
+    type: 'feature',
+    section: 'Features',
+    effect: 'bump'
+  },
+  {
+    type: 'fix',
+    section: 'Bug Fixes',
+    effect: 'bump'
+  },
+  {
+    type: 'perf',
+    section: 'Performance Improvements',
+    effect: 'bump'
+  },
+  {
+    type: 'revert',
+    section: 'Reverts',
+    effect: 'bump'
+  },
+  {
+    type: 'docs',
+    section: 'Documentation',
+    effect: 'hidden'
+  },
+  {
+    type: 'style',
+    section: 'Styles',
+    effect: 'hidden'
+  },
+  {
+    type: 'chore',
+    section: 'Miscellaneous Chores',
+    effect: 'hidden'
+  },
+  {
+    type: 'refactor',
+    section: 'Code Refactoring',
+    effect: 'hidden'
+  },
+  {
+    type: 'test',
+    section: 'Tests',
+    effect: 'hidden'
+  },
+  {
+    type: 'build',
+    section: 'Build System',
+    effect: 'hidden'
+  },
+  {
+    type: 'ci',
+    section: 'Continuous Integration',
+    effect: 'hidden'
+  }
+].map(Object.freeze));
+
+function createParserOpts(config) {
+  return {
+    headerPattern: /^(\w*)(?:\((.*)\))?!?: (.*)$/,
+    breakingHeaderPattern: BREAKING_HEADER_PATTERN,
+    headerCorrespondence: [
+      'type',
+      'scope',
+      'subject'
+    ],
+    noteKeywords: BREAKING_CHANGE_KEYWORDS,
+    revertPattern: /^(?:Revert|revert:)\s"?([\s\S]+?)"?\s*This reverts commit (\w*)\./i,
+    revertCorrespondence: ['header', 'hash'],
+    issuePrefixes: config?.issuePrefixes || ['#']
+  }
+}
+
+/**
+ * Get commit notes with the breaking change declared by `!` in the header.
+ * The parser adds that note only if the commit has no notes at all,
+ * so a footer of any other keyword hides the breaking change.
+ * @param commit
+ * @returns Commit notes.
+ */
+function getNotes(commit) {
+  if (commit.notes.some(isBreakingNote) || !BREAKING_HEADER_PATTERN.test(commit.header || '')) {
+    return commit.notes
+  }
+
+  return [
+    {
+      title: BREAKING_CHANGE_KEYWORDS[0],
+      text: commit.subject || ''
+    },
+    ...commit.notes
+  ]
+}
+
+function hasIntersection(a, b) {
+  if (!a || !b) {
+    return false
+  }
+
+  let listA = a;
+  let listB = b;
+
+  if (!Array.isArray(listA)) {
+    listA = [listA];
+  }
+
+  if (!Array.isArray(listB)) {
+    listB = [listB];
+  }
+
+  return listA.some(item => listB.includes(item))
+}
+
+function matchScope(config = {}, commit) {
+  const {
+    scope: targetScope,
+    scopeOnly = false
+  } = config;
+  const includesScope = hasIntersection(
+    commit.scope?.split(','),
+    targetScope
+  );
+
+  return !targetScope
+    || (scopeOnly && includesScope)
+    || (!scopeOnly && (!commit.scope || includesScope))
+}
+
+function findTypeEntry(types, commit) {
+  const typeKey = (commit.revert ? 'revert' : commit.type || '').toLowerCase();
+
+  return types.find((entry) => {
+    if (entry.type !== typeKey) {
+      return false
+    }
+
+    if (entry.scope && entry.scope !== commit.scope) {
+      return false
+    }
+
+    return true
+  })
+}
+
+function isTypeEffect(type, effect) {
+  return (type.effect || 'bump') === effect
+}
+
+function headerPartial(context) {
+  const {
+    linkCompare,
+    version,
+    title,
+    date
+  } = context;
+  const versionText = linkCompare
+    ? link(version, this.formatCompareUrl(context))
+    : version;
+
+  return heading(
+    2,
+    words(
+      versionText,
+      title && `"${title}"`,
+      date && `(${date})`
+    )
+  )
+}
+
+function preamblePartial(context) {
+  return strings(context.preamble)
+}
+
+function renderReferences(context, references, filter) {
+  return each(
+    references?.filter(filter),
+    (commitReference) => {
+      if (context.linkReferences) {
+        return link(
+          reference(commitReference),
+          this.formatIssueUrl(context, commitReference)
+        )
+      }
+
+      return reference(commitReference)
+    },
+    ' '
+  )
+}
+
+function commitPartial(context, commit) {
+  const { linkReferences } = context;
+  const {
+    scope,
+    subject,
+    header,
+    shortHash,
+    hash,
+    references
+  } = commit;
+  const commitLink = hash
+    ? linkReferences
+      ? `(${link(shortHash, this.formatCommitUrl(context, commit))})`
+      : shortHash
+    : '';
+  const closingReferences = renderReferences.call(
+    this,
+    context,
+    references,
+    commitReference => commitReference.action
+  );
+  const otherReferences = renderReferences.call(
+    this,
+    context,
+    references,
+    commitReference => !commitReference.action
+  );
+
+  return strings(
+    words(
+      scope && bold(`${scope}:`),
+      subject || header || '',
+      commitLink
+    ),
+    closingReferences && `, closes ${closingReferences}`,
+    otherReferences && `, references ${otherReferences}`
+  )
+}
+
+function footerPartial() {
+  return ''
+}
+
+function template(context) {
+  const {
+    headerPartial,
+    preamblePartial,
+    commitPartial,
+    footerPartial,
+    noteGroups,
+    commitGroups
+  } = context;
+
+  return segments(
+    headerPartial(context),
+    preamblePartial(context),
+    each(
+      noteGroups,
+      group => segments(
+        heading(3, words(this.formatNoteIcon(context, group.title), group.title)),
+        list(
+          group.notes,
+          note => words(
+            note.commit.scope && bold(`${note.commit.scope}:`),
+            note.text
+          )
+        )
+      ),
+      newline(2)
+    ),
+    each(
+      commitGroups,
+      group => segments(
+        group.title && heading(3, group.title),
+        list(
+          group.commits,
+          commit => commitPartial(context, commit)
+        )
+      ),
+      newline(2)
+    ),
+    footerPartial(context)
+  )
+}
+
+function formatNoteTitle(context, title) {
+  return noteTitle(title)
+}
+
+function formatNoteIcon(context, title) {
+  return title === BREAKING_CHANGES_TITLE ? '⚠' : ''
+}
+
+function formatIssueUrl(context, reference) {
+  return url(
+    referenceRepositoryUrl(context, reference),
+    context.issue || 'issues',
+    reference.issue
+  )
+}
+
+function formatCommitUrl(context, commit) {
+  return url(repositoryUrl(context), context.commit || 'commit', commit.hash)
+}
+
+function formatCompareUrl(context) {
+  return compareUrl(context)
+}
+
+function formatUserUrl(context, user) {
+  return url(context.host, user)
+}
+
+var format = /*#__PURE__*/Object.freeze({
+    __proto__: null,
+    formatCommitUrl: formatCommitUrl,
+    formatCompareUrl: formatCompareUrl,
+    formatIssueUrl: formatIssueUrl,
+    formatNoteIcon: formatNoteIcon,
+    formatNoteTitle: formatNoteTitle,
+    formatUserUrl: formatUserUrl
+});
+
+const COMMIT_HASH_LENGTH = 7;
+const releaseAsRegex = /release-as:\s*\w*@?([0-9]+\.[0-9]+\.[0-9a-z]+(-[0-9a-z.]+)?)\s*/i;
+
+function compareNotes(a, b) {
+  return (a.title || '').localeCompare(b.title || '')
+    || (a.text || '').localeCompare(b.text || '')
+}
+
+function createWriterOpts(config) {
+  const finalConfig = {
+    types: DEFAULT_COMMIT_TYPES,
+    issuePrefixes: ['#'],
+    ...format,
+    ...config
+  };
+  const commitGroupOrder = finalConfig.types.map(t => t.section).filter(Boolean);
+  const formatReferences = createReferencesFormatter(finalConfig);
+
+  return {
+    ...createLegacyWriterGuard('conventional-changelog-conventionalcommits'),
+    template: template.bind(finalConfig),
+    headerPartial: headerPartial.bind(finalConfig),
+    preamblePartial: preamblePartial.bind(finalConfig),
+    commitPartial: commitPartial.bind(finalConfig),
+    footerPartial: footerPartial.bind(finalConfig),
+    transform: (commit, context) => {
+      let discard = true;
+      const issues = [];
+      const entry = findTypeEntry(finalConfig.types, commit);
+
+      // Add an entry in the CHANGELOG if special Release-As footer
+      // is used:
+      if ((commit.footer && releaseAsRegex.test(commit.footer))
+        || (commit.body && releaseAsRegex.test(commit.body))) {
+        discard = false;
+      }
+
+      const notes = getNotes(commit).map((note) => {
+        discard = false;
+
+        return {
+          ...note,
+          title: finalConfig.formatNoteTitle(context, note.title),
+          text: formatReferences(note.text, context)
+        }
+      });
+
+      if (
+        // notes attached to any type are still displayed.
+        discard && (entry === undefined || isTypeEffect(entry, 'hidden'))
+        || !matchScope(finalConfig, commit)
+      ) {
+        return undefined
+      }
+
+      const type = entry
+        ? entry.section
+        : commit.type;
+      const scope = commit.scope === '*' || finalConfig.scope
+        ? ''
+        : commit.scope;
+      const shortHash = typeof commit.hash === 'string'
+        ? commit.hash.substring(0, COMMIT_HASH_LENGTH)
+        : commit.shortHash;
+      let { subject } = commit;
+
+      if (typeof subject === 'string') {
+        // Issue and user URLs.
+        subject = formatReferences(subject, context, issues);
+      }
+
+      // remove references that already appear in the subject
+      const references = commit.references.filter(reference => !issues.includes(reference.prefix + reference.issue));
+
+      return {
+        notes,
+        type,
+        scope,
+        shortHash,
+        subject,
+        references
+      }
+    },
+    groupBy: 'type',
+    // the groupings of commit messages, e.g., Features vs., Bug Fixes, are
+    // sorted based on their probable importance:
+    commitGroupsSort: (a, b) => {
+      const gRankA = commitGroupOrder.indexOf(a.title);
+      const gRankB = commitGroupOrder.indexOf(b.title);
+
+      return gRankA - gRankB
+    },
+    commitsSort: ['scope', 'subject'],
+    noteGroupsSort: 'title',
+    notesSort: compareNotes
+  }
+}
+
+function createWhatBump(config = {}) {
+  const { types = DEFAULT_COMMIT_TYPES } = config;
+
+  return function whatBump(commits) {
+    let level = null;
+    let breakings = 0;
+    let features = 0;
+
+    commits.forEach((commit) => {
+      if (!matchScope(config, commit)) {
+        return
+      }
+
+      const entry = findTypeEntry(types, commit);
+      // only breaking change notes affect the version,
+      // any other note keyword is just a changelog section
+      const breakingNotes = getNotes(commit).filter(isBreakingNote);
+
+      if (breakingNotes.length > 0) {
+        breakings += breakingNotes.length;
+        level = 0;
+      } else
+        if (entry && isTypeEffect(entry, 'bump')) {
+          if (level === null) {
+            level = 2;
+          }
+
+          if (commit.type === 'feat' || commit.type === 'feature') {
+            features += 1;
+
+            if (level > 1) {
+              level = 1;
+            }
+          }
+        }
+    });
+
+    if (level === null) {
+      return null
+    }
+
+    if (config?.preMajor && level < 2) {
+      level++;
+    }
+
+    return {
+      level,
+      reason: breakings === 1
+        ? `There is ${breakings} BREAKING CHANGE and ${features} features`
+        : `There are ${breakings} BREAKING CHANGES and ${features} features`
+    }
+  }
+}
+
+function createPreset(config) {
+  return {
+    commits: {
+      ignore: config?.ignoreCommits,
+      merges: false
+    },
+    parser: createParserOpts(config),
+    writer: createWriterOpts(config),
+    whatBump: createWhatBump(config)
+  }
+}
+
 try {
   const bumper = new Bumper();
-  bumper.loadPreset('conventionalcommits');
+  bumper.loadPreset('conventionalcommits', () => createPreset);
   const tag = getInput('tag');
   if (tag)
     bumper.tag(tag);
   const paths = getMultilineInput('path');
   const { level } = await bumper.bump();
-  for (const path in paths) {
+  for (const path of paths) {
     const content = readFileSync$1(path, 'utf-8');
     const rawxml = content.replace(/^\xef\xbb\xbf/, '');
     const parser = new DOMParser();
