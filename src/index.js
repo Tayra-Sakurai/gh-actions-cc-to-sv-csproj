@@ -3,16 +3,17 @@ import * as github from "@actions/github";
 import { Bumper } from "conventional-recommended-bump";
 import { readFileSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
+import preset from "conventional-changelog-conventionalcommits";
 
 try {
   const bumper = new Bumper();
-  bumper.loadPreset('conventionalcommits');
+  bumper.loadPreset('conventionalcommits', () => preset);
   const tag = core.getInput('tag');
   if (tag)
     bumper.tag(tag);
   const paths = core.getMultilineInput('path');
   const { level } = await bumper.bump();
-  for (const path in paths) {
+  for (const path of paths) {
     const content = readFileSync(path, 'utf-8');
     const rawxml = content.replace(/^\xef\xbb\xbf/, '');
     const parser = new DOMParser();
