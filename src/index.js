@@ -6,6 +6,7 @@ import { execSync } from "node:child_process";
 
 try {
   const bumper = new Bumper();
+  bumper.loadPreset('conventionalcommits');
   const tag = core.getInput('tag');
   if (tag)
     bumper.tag(tag);
