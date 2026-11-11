@@ -270,7 +270,7 @@ async function run() {
       const xmlText = appxmanifestcontent.replace(/^\ufeff/, '');
       const parser = new XMLParser(parserOptions);
       const node = parser.parse(xmlText);
-      const version = getTagAttribute(node, 'Identity', 'Version');
+      const version = getTagAttribute(node, 'Identity', 'Version') ?? getTagAttribute(node, 'assemblyIdentity', 'Version');
       if (!version) {
         throw new Error(`Identity Version not found in ${appxmanifestPath}`);
       }
