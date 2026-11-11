@@ -34989,7 +34989,7 @@ try {
   const tag = getInput('tag');
   if (tag)
     bumper.tag(tag);
-  const paths = getMultilineInput('paths');
+  const paths = getMultilineInput('path');
   const { level } = await bumper.bump();
   for (const path in paths) {
     const content = readFileSync$1(path, 'utf-8');
