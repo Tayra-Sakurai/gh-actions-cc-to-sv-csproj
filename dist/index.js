@@ -42620,10 +42620,10 @@ async function run() {
         parseTagValue: false,
       });
       const xml = parser.parse(rawxml);
-      const versionTagP = getTagValue(xml, 'PackageVersion');
+      const versionTagP = getTagValue(xml, 'Version');
       const versionTagA = getTagValue(xml, 'AssemblyVersion');
       if (!versionTagP || !versionTagA) {
-        throw new Error(`PackageVersion or AssemblyVersion not found in ${path}`);
+        throw new Error(`Version or AssemblyVersion not found in ${path}`);
       }
       let [ major, minor, patch, ...suffix ] = versionTagP.split(/\.|-/);
       let build = Number.parseInt(versionTagA.split(/\D/)[3]);
@@ -42666,7 +42666,7 @@ async function run() {
         '-' + suffix.join('.') :
         '';
       const newPVersion = `${major}.${minor}.${patch}${newSuffix}`;
-      setTagValue(xml, 'PackageVersion', newPVersion);
+      setTagValue(xml, 'Version', newPVersion);
       const newAVersion = `${major}.${minor}.${patch}.${build}`;
       setTagValue(xml, 'AssemblyVersion', newAVersion);
       setOrAddTagValue(xml, 'FileVersion', newAVersion, 'AssemblyVersion');
