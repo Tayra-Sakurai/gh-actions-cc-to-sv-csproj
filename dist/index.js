@@ -1,6 +1,6 @@
 import * as os from 'os';
 import os__default, { EOL as EOL$1 } from 'os';
-import 'crypto';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import { promises, existsSync, readFileSync } from 'fs';
 import path from 'path';
@@ -155,6 +155,36 @@ function escapeProperty(s) {
         .replace(/\n/g, '%0A')
         .replace(/:/g, '%3A')
         .replace(/,/g, '%2C');
+}
+
+// For internal use, subject to change.
+// We use any as a valid input type
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function issueFileCommand(command, message) {
+    const filePath = process.env[`GITHUB_${command}`];
+    if (!filePath) {
+        throw new Error(`Unable to find environment variable for file command ${command}`);
+    }
+    if (!fs.existsSync(filePath)) {
+        throw new Error(`Missing file at path: ${filePath}`);
+    }
+    fs.appendFileSync(filePath, `${toCommandValue(message)}${os.EOL}`, {
+        encoding: 'utf8'
+    });
+}
+function prepareKeyValueMessage(key, value) {
+    const delimiter = `ghadelimiter_${crypto.randomUUID()}`;
+    const convertedValue = toCommandValue(value);
+    // These should realistically never happen, but just in case someone finds a
+    // way to exploit uuid generation let's not allow keys or values that contain
+    // the delimiter.
+    if (key.includes(delimiter)) {
+        throw new Error(`Unexpected input: name should not contain the delimiter "${delimiter}"`);
+    }
+    if (convertedValue.includes(delimiter)) {
+        throw new Error(`Unexpected input: value should not contain the delimiter "${delimiter}"`);
+    }
+    return `${key}<<${delimiter}${os.EOL}${convertedValue}${os.EOL}${delimiter}`;
 }
 
 var commonjsGlobal = typeof globalThis !== 'undefined' ? globalThis : typeof window !== 'undefined' ? window : typeof global !== 'undefined' ? global : typeof self !== 'undefined' ? self : {};
@@ -28728,6 +28758,21 @@ function getMultilineInput(name, options) {
         .filter(x => x !== '');
     return inputs.map(input => input.trim());
 }
+/**
+ * Sets the value of an output.
+ *
+ * @param     name     name of the output to set
+ * @param     value    value to store. Non-string values will be converted to a string via JSON.stringify
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function setOutput(name, value) {
+    const filePath = process.env['GITHUB_OUTPUT'] || '';
+    if (filePath) {
+        return issueFileCommand('OUTPUT', prepareKeyValueMessage(name, value));
+    }
+    process.stdout.write(os.EOL);
+    issueCommand('set-output', { name }, toCommandValue(value));
+}
 //-----------------------------------------------------------------------
 // Results
 //-----------------------------------------------------------------------
@@ -42546,6 +42591,12 @@ function isAttribute(name /*, options*/) {
   }
 }
 
+/**
+ * Finds nodes by tag name.
+ * @param {*} nodes Parsed XML data
+ * @param {string} tagName The searching tag name
+ * @returns {*}
+ */
 function findTag(nodes, tagName) {
   if (!Array.isArray(nodes)) return null;
   for (const node of nodes) {
@@ -42560,6 +42611,32 @@ function findTag(nodes, tagName) {
   return null;
 }
 
+/**
+ * Finds an XML node object containing the specified tag name.
+ * @param {*} nodes Parsed XML data
+ * @param {string} tagName The searching tag name
+ * @returns {object|null} The matching node object, or null if not found
+ */
+function findNode(nodes, tagName) {
+  if (!Array.isArray(nodes)) return null;
+  for (const node of nodes) {
+    if (tagName in node) return node;
+    for (const key of Object.keys(node)) {
+      if (key !== ":@" && Array.isArray(node[key])) {
+        const found = findNode(node[key], tagName);
+        if (found) return found;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Gets the text value of a tag.
+ * @param {*} nodes Parsed XML data
+ * @param {string} tagName The tag name
+ * @returns {string|null} The text value of the tag, or null if not found
+ */
 function getTagValue(nodes, tagName) {
   const node = findTag(nodes, tagName);
   if (!node || !Array.isArray(node)) return null;
@@ -42567,6 +42644,13 @@ function getTagValue(nodes, tagName) {
   return textObj ? String(textObj["#text"]) : "";
 }
 
+/**
+ * Sets the text value of a tag.
+ * @param {*} nodes Parsed XML data
+ * @param {string} tagName The tag name
+ * @param {string} value The text value to set
+ * @returns {boolean} True if the tag was found and updated, otherwise false
+ */
 function setTagValue(nodes, tagName, value) {
   const node = findTag(nodes, tagName);
   if (!node || !Array.isArray(node)) return false;
@@ -42579,9 +42663,22 @@ function setTagValue(nodes, tagName, value) {
   return true;
 }
 
+/**
+ * Sets the text value of a tag, or adds the tag after a specified sibling if it does not exist.
+ * @param {*} nodes Parsed XML data
+ * @param {string} tagName The tag name
+ * @param {string} value The text value to set
+ * @param {string|null} [nearTagName=null] The sibling tag name to insert after if tag does not exist
+ * @returns {void}
+ */
 function setOrAddTagValue(nodes, tagName, value, nearTagName = null) {
   if (setTagValue(nodes, tagName, value)) return;
   if (nearTagName) {
+    /**
+     * Recursively searches for the nearTagName and inserts the new tag after it.
+     * @param {*} list List of XML nodes
+     * @returns {boolean} True if inserted, otherwise false
+     */
     function addToParent(list) {
       if (!Array.isArray(list)) return false;
       for (let i = 0; i < list.length; i++) {
@@ -42601,6 +42698,56 @@ function setOrAddTagValue(nodes, tagName, value, nearTagName = null) {
   }
 }
 
+/**
+ * Gets an attribute value from a specified tag.
+ * @param {*} nodes Parsed XML data
+ * @param {string} tagName The tag name
+ * @param {string} attributeName The attribute name
+ * @returns {string|null} The attribute value, or null if not found
+ */
+function getTagAttribute(nodes, tagName, attributeName) {
+  const node = findNode(nodes, tagName);
+  if (!node || !node[":@"]) return null;
+  const cleanAttr = attributeName.startsWith("@_") ? attributeName.slice(2) : attributeName;
+  for (const key of Object.keys(node[":@"])) {
+    const rawKey = key.startsWith("@_") ? key.slice(2) : key;
+    if (rawKey.toLowerCase() === cleanAttr.toLowerCase()) {
+      return String(node[":@"][key]);
+    }
+  }
+  return null;
+}
+
+/**
+ * Sets an attribute value on a specified tag.
+ * @param {*} nodes Parsed XML data
+ * @param {string} tagName The tag name
+ * @param {string} attributeName The attribute name
+ * @param {string} value The value to set
+ * @returns {boolean} True if the tag was found and updated, otherwise false
+ */
+function setTagAttribute(nodes, tagName, attributeName, value) {
+  const node = findNode(nodes, tagName);
+  if (!node) return false;
+  if (!node[":@"]) {
+    node[":@"] = {};
+  }
+  const cleanAttr = attributeName.startsWith("@_") ? attributeName.slice(2) : attributeName;
+  for (const key of Object.keys(node[":@"])) {
+    const rawKey = key.startsWith("@_") ? key.slice(2) : key;
+    if (rawKey.toLowerCase() === cleanAttr.toLowerCase()) {
+      node[":@"][key] = value;
+      return true;
+    }
+  }
+  node[":@"][`@_${cleanAttr}`] = value;
+  return true;
+}
+
+/**
+ * Runs the GitHub Action to bump versions in project and manifest files.
+ * @returns {Promise<void>}
+ */
 async function run() {
   try {
     const bumper = new Bumper();
@@ -42609,16 +42756,37 @@ async function run() {
     if (tag)
       bumper.tag(tag);
     const paths = getMultilineInput('path');
-    const { level } = await bumper.bump();
+    const { level, releaseType } = await bumper.bump();
+
+    /**
+     * Common builder options.
+     * @type {import("fast-xml-builder").XmlBuilderOptions}
+     */
+    const builderOptions = {
+      preserveOrder: true,
+      commentPropName: "#comment",
+      ignoreAttributes: false,
+      format: true,
+      indentBy: '  ',
+      suppressEmptyNode: true,
+    };
+
+    /**
+     * Common parser options.
+     * @type {import("fast-xml-parser").X2jOptions}
+     */
+    const parserOptions = {
+      preserveOrder: true,
+      commentPropName: "#comment",
+      ignoreAttributes: false,
+      parseTagValue: false,
+    };
+
     for (const path of paths) {
       const content = readFileSync$1(path, 'utf-8');
-      const rawxml = content.replace(/^\xef\xbb\xbf/, '');
-      const parser = new XMLParser({
-        preserveOrder: true,
-        commentPropName: "#comment",
-        ignoreAttributes: false,
-        parseTagValue: false,
-      });
+      info(content);
+      const rawxml = content.replace(/^\ufeff/, '');
+      const parser = new XMLParser(parserOptions);
       const xml = parser.parse(rawxml);
       const versionTagP = getTagValue(xml, 'Version');
       const versionTagA = getTagValue(xml, 'AssemblyVersion');
@@ -42670,19 +42838,78 @@ async function run() {
       const newAVersion = `${major}.${minor}.${patch}.${build}`;
       setTagValue(xml, 'AssemblyVersion', newAVersion);
       setOrAddTagValue(xml, 'FileVersion', newAVersion, 'AssemblyVersion');
-      const builder = new Builder({
-        preserveOrder: true,
-        commentPropName: "#comment",
-        ignoreAttributes: false,
-        format: true,
-        indentBy: '  ',
-        suppressEmptyNode: true,
-      });
+      const builder = new Builder(builderOptions);
       const serialized = builder.build(xml).trimStart();
       const eol = rawxml.endsWith('\r\n') ? '\r\n' : (rawxml.endsWith('\n') ? '\n' : '');
       const output = serialized.endsWith('\n') ? serialized : serialized + eol;
-      writeFileSync(path, '\xef\xbb\xbf' + output, 'utf-8');
+      info(`Output:\n${output}`);
+      writeFileSync(path, '\ufeff' + output, 'utf-8');
     }
+
+    const appxmanifestPaths = getMultilineInput('appxmanifestpath');
+
+    for (const appxmanifestPath of appxmanifestPaths) {
+      const appxmanifestcontent = readFileSync$1(appxmanifestPath, 'utf8');
+      info(appxmanifestcontent);
+      const xmlText = appxmanifestcontent.replace(/^\ufeff/, '');
+      const parser = new XMLParser(parserOptions);
+      const node = parser.parse(xmlText);
+      const version = getTagAttribute(node, 'Identity', 'Version');
+      if (!version) {
+        throw new Error(`Identity Version not found in ${appxmanifestPath}`);
+      }
+      let [ major, minor, patch, ...rest ] = version.split(/\.|-/);
+      let build = Number.parseInt(rest[0], 10);
+      if (Number.isNaN(build)) build = 0;
+      let suffix = rest.slice(1);
+      switch (level) {
+        case 0:
+          if (suffix.length > 0) {
+            suffix[1] = suffix.length >= 2 ? String(Number.parseInt(suffix[1], 10) + 1) : '1';
+            build++;
+            break;
+          }
+          build = 0;
+          minor = '0';
+          patch = '0';
+          major = String(Number.parseInt(major, 10) + 1);
+          break;
+        case 1:
+          if (suffix.length > 0) {
+            suffix[1] = suffix.length >= 2 ? String(Number.parseInt(suffix[1], 10) + 1) : '1';
+            build++;
+            break;
+          }
+          build = 0;
+          patch = '0';
+          minor = String(Number.parseInt(minor, 10) + 1);
+          break;
+        case 2:
+          if (suffix.length > 0) {
+            suffix[1] = suffix.length >= 2 ? String(Number.parseInt(suffix[1], 10) + 1) : '1';
+            build++;
+            break;
+          }
+          build = 0;
+          patch = String(Number.parseInt(patch, 10) + 1);
+          break;
+        default:
+          build++;
+          break;
+      }
+      let newSuffix = suffix.length > 0 ?
+        '-' + suffix.join('.') :
+        '';
+      const newVersion = `${major}.${minor}.${patch}.${build}${newSuffix}`;
+      setTagAttribute(node, 'Identity', 'Version', newVersion);
+      const builder = new Builder(builderOptions);
+      const serialized = builder.build(node).trimStart();
+      const eol = xmlText.endsWith('\r\n') ? '\r\n' : (xmlText.endsWith('\n') ? '\n' : '');
+      const output = serialized.endsWith('\n') ? serialized : serialized + eol;
+      info(`Output:\n${output}`);
+      writeFileSync(appxmanifestPath, '\ufeff' + output, 'utf-8');
+    }
+
     execSync('git config user.name "github-actions[bot]"', { stdio: 'inherit' });
     execSync('git config user.email "41898282+github-actions[bot]@://github.com"', { stdio: 'inherit' });
     execSync('git add .', { stdio: 'inherit' });
@@ -42695,6 +42922,8 @@ async function run() {
     } else {
       info('No changes to commit.');
     }
+
+    setOutput('release-type', releaseType);
   } catch (error) {
     setFailed(error.message);
   }
