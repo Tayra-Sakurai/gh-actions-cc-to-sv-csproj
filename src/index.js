@@ -4,6 +4,63 @@ import { Bumper } from "conventional-recommended-bump";
 import { readFileSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import preset from "conventional-changelog-conventionalcommits";
+import { XMLParser } from "fast-xml-parser";
+import XMLBuilder from "fast-xml-builder";
+
+function findTag(nodes, tagName) {
+  if (!Array.isArray(nodes)) return null;
+  for (const node of nodes) {
+    if (node[tagName]) return node[tagName];
+    for (const key of Object.keys(node)) {
+      if (key !== ":@" && Array.isArray(node[key])) {
+        const found = findTag(node[key], tagName);
+        if (found) return found;
+      }
+    }
+  }
+  return null;
+}
+
+function getTagValue(nodes, tagName) {
+  const node = findTag(nodes, tagName);
+  if (!node || !Array.isArray(node)) return null;
+  const textObj = node.find((child) => "#text" in child);
+  return textObj ? String(textObj["#text"]) : "";
+}
+
+function setTagValue(nodes, tagName, value) {
+  const node = findTag(nodes, tagName);
+  if (!node || !Array.isArray(node)) return false;
+  const textObj = node.find((child) => "#text" in child);
+  if (textObj) {
+    textObj["#text"] = value;
+  } else {
+    node.push({ "#text": value });
+  }
+  return true;
+}
+
+function setOrAddTagValue(nodes, tagName, value, nearTagName = null) {
+  if (setTagValue(nodes, tagName, value)) return;
+  if (nearTagName) {
+    function addToParent(list) {
+      if (!Array.isArray(list)) return false;
+      for (let i = 0; i < list.length; i++) {
+        if (list[i][nearTagName]) {
+          list.splice(i + 1, 0, { [tagName]: [{ "#text": value }] });
+          return true;
+        }
+        for (const key of Object.keys(list[i])) {
+          if (key !== ":@" && Array.isArray(list[i][key])) {
+            if (addToParent(list[i][key])) return true;
+          }
+        }
+      }
+      return false;
+    }
+    addToParent(nodes);
+  }
+}
 
 async function run() {
   try {
@@ -17,10 +74,18 @@ async function run() {
     for (const path of paths) {
       const content = readFileSync(path, 'utf-8');
       const rawxml = content.replace(/^\xef\xbb\xbf/, '');
-      const parser = new DOMParser();
-      const xml = parser.parseFromString(rawxml, 'text/xml');
-      const versionTagP = xml.querySelector('PackageVersion').innerHTML;
-      const versionTagA = xml.querySelector('AssemblyVersion').innerHTML;
+      const parser = new XMLParser({
+        preserveOrder: true,
+        commentPropName: "#comment",
+        ignoreAttributes: false,
+        parseTagValue: false,
+      });
+      const xml = parser.parse(rawxml);
+      const versionTagP = getTagValue(xml, 'PackageVersion');
+      const versionTagA = getTagValue(xml, 'AssemblyVersion');
+      if (!versionTagP || !versionTagA) {
+        throw new Error(`PackageVersion or AssemblyVersion not found in ${path}`);
+      }
       let [ major, minor, patch, ...suffix ] = versionTagP.split(/\.|-/);
       let build = Number.parseInt(versionTagA.split(/\D/)[3]);
       switch (level) {
@@ -62,12 +127,22 @@ async function run() {
         '-' + suffix.join('.') :
         '';
       const newPVersion = `${major}.${minor}.${patch}${newSuffix}`;
-      xml.querySelector('PackageVersion').innerHTML = newPVersion;
+      setTagValue(xml, 'PackageVersion', newPVersion);
       const newAVersion = `${major}.${minor}.${patch}.${build}`;
-      xml.querySelector('AssemblyVersion').innerHTML = newAVersion;
-      xml.querySelector('FileVersion').innerHTML = newAVersion;
-      const serializer = new XMLSerializer();
-      writeFileSync(path, '\xef\xbb\xbf' + serializer.serializeToString(xml), 'utf-8');
+      setTagValue(xml, 'AssemblyVersion', newAVersion);
+      setOrAddTagValue(xml, 'FileVersion', newAVersion, 'AssemblyVersion');
+      const builder = new XMLBuilder({
+        preserveOrder: true,
+        commentPropName: "#comment",
+        ignoreAttributes: false,
+        format: true,
+        indentBy: '  ',
+        suppressEmptyNode: true,
+      });
+      const serialized = builder.build(xml).trimStart();
+      const eol = rawxml.endsWith('\r\n') ? '\r\n' : (rawxml.endsWith('\n') ? '\n' : '');
+      const output = serialized.endsWith('\n') ? serialized : serialized + eol;
+      writeFileSync(path, '\xef\xbb\xbf' + output, 'utf-8');
     }
     execSync('git config user.name "github-actions[bot]"', { stdio: 'inherit' });
     execSync('git config user.email "41898282+github-actions[bot]@://github.com"', { stdio: 'inherit' });
