@@ -42782,6 +42782,12 @@ async function run() {
       parseTagValue: false,
     };
 
+    /**
+     * Whether the project package version has a suffix or not.
+     * @type {boolean}
+     */
+    let hasSuffix = false;
+
     for (const path of paths) {
       const content = readFileSync$1(path, 'utf-8');
       info(content);
@@ -42795,6 +42801,7 @@ async function run() {
       }
       let [ major, minor, patch, ...suffix ] = versionTagP.split(/\.|-/);
       let build = Number.parseInt(versionTagA.split(/\D/)[3]);
+      hasSuffix ||= suffix.length > 0;
       switch (level) {
         case 0:
           if (suffix.length > 0) {
@@ -42862,46 +42869,53 @@ async function run() {
       let build = Number.parseInt(rest[0], 10);
       if (Number.isNaN(build)) build = 0;
       let suffix = rest.slice(1);
-      switch (level) {
-        case 0:
-          if (suffix.length > 0) {
-            suffix[1] = suffix.length >= 2 ? String(Number.parseInt(suffix[1], 10) + 1) : '1';
+      if (!hasSuffix) {
+        switch (level) {
+          case 0:
+            if (suffix.length > 0) {
+              suffix[1] = suffix.length >= 2 ? String(Number.parseInt(suffix[1], 10) + 1) : '1';
+              build++;
+              break;
+            }
+            build = 0;
+            minor = '0';
+            patch = '0';
+            major = String(Number.parseInt(major, 10) + 1);
+            break;
+          case 1:
+            if (suffix.length > 0) {
+              suffix[1] = suffix.length >= 2 ? String(Number.parseInt(suffix[1], 10) + 1) : '1';
+              build++;
+              break;
+            }
+            build = 0;
+            patch = '0';
+            minor = String(Number.parseInt(minor, 10) + 1);
+            break;
+          case 2:
+            if (suffix.length > 0) {
+              suffix[1] = suffix.length >= 2 ? String(Number.parseInt(suffix[1], 10) + 1) : '1';
+              build++;
+              break;
+            }
+            build = 0;
+            patch = String(Number.parseInt(patch, 10) + 1);
+            break;
+          default:
             build++;
             break;
-          }
-          build = 0;
-          minor = '0';
-          patch = '0';
-          major = String(Number.parseInt(major, 10) + 1);
-          break;
-        case 1:
-          if (suffix.length > 0) {
-            suffix[1] = suffix.length >= 2 ? String(Number.parseInt(suffix[1], 10) + 1) : '1';
-            build++;
-            break;
-          }
-          build = 0;
-          patch = '0';
-          minor = String(Number.parseInt(minor, 10) + 1);
-          break;
-        case 2:
-          if (suffix.length > 0) {
-            suffix[1] = suffix.length >= 2 ? String(Number.parseInt(suffix[1], 10) + 1) : '1';
-            build++;
-            break;
-          }
-          build = 0;
-          patch = String(Number.parseInt(patch, 10) + 1);
-          break;
-        default:
-          build++;
-          break;
+        }
+      } else {
+        build++;
       }
       let newSuffix = suffix.length > 0 ?
         '-' + suffix.join('.') :
         '';
       const newVersion = `${major}.${minor}.${patch}.${build}${newSuffix}`;
-      setTagAttribute(node, 'Identity', 'Version', newVersion);
+      if (findTag(node, 'Identity'))
+        setTagAttribute(node, 'Identity', 'Version', newVersion);
+      else
+        setTagAttribute(node, 'assemblyIdentity', 'version', newVersion);
       const builder = new Builder(builderOptions);
       const serialized = builder.build(node).trimStart();
       const eol = xmlText.endsWith('\r\n') ? '\r\n' : (xmlText.endsWith('\n') ? '\n' : '');
